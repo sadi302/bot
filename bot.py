@@ -36,10 +36,15 @@ MAX_FILE_SIZE = 5 * 1024 * 1024
 
 ZIP_DISPLAY_TEXT = (
     "<code>10001</code> ( New York, NY )\n"
-    "<code>77046</code> ( Houston, TX )\n"
-    "<code>22904</code> (Charlottesville area, VA)\n"
-    "<code>30363</code> (Atlanta, GA)\n"
-    "<code>60301</code> (Oak Park/Chicago area, IL)"
+    "<code>90210</code> ( Beverly Hills, CA )\n"
+    "<code>89109</code> ( Las Vegas, NV )\n"
+    "<code>33139</code> ( Miami Beach, FL )\n"
+    "<code>60611</code> ( Chicago, IL )\n"
+    "<code>94102</code> ( San Francisco, CA )\n"
+    "<code>90401</code> ( Santa Monica, CA )\n"
+    "<code>78701</code> ( Austin, TX )\n"
+    "<code>02138</code> ( Cambridge, MA )\n"
+    "<code>98101</code> ( Seattle, WA )"
 )
 
 # API Keys for Proxy Checker
@@ -366,7 +371,7 @@ def load_mail_data(user_id):
         if row:
             try: return json.loads(row[0])
             except: pass
-    return {"emails": [], "assigned": {}, "index": 0}
+    return {"emails": [], "assigned": {}, "status": {}, "index": 0}
 
 def save_mail_data(user_id, data_dict):
     with db_connect() as conn:
@@ -443,6 +448,7 @@ def build_caddy_view(user_id):
     emails = mail_data.get('emails', [])
     index = mail_data.get('index', 0)
     assigned = mail_data.setdefault('assigned', {})
+    status_dict = mail_data.setdefault('status', {})
     
     if not emails:
         return "📭 <b>Mail list empty.</b>\nPlease update list using /update_mail_list", None
@@ -457,6 +463,11 @@ def build_caddy_view(user_id):
 
     current_email = emails[index]
     idx_str = str(index)
+    
+    current_status = status_dict.get(idx_str, "pending")
+    status_text = "⏳ Pending"
+    if current_status == "eligible": status_text = "✅ Eligible"
+    elif current_status == "not_eligible": status_text = "❌ Not Eligible"
     
     # Generate CC and pick ZIP if not already assigned for this mail
     if idx_str not in assigned:
@@ -475,9 +486,8 @@ def build_caddy_view(user_id):
     else:
         cc_formatted = f"<code>{esc(cc_str)}</code>"
     
-    # Exact Output format with monospace tags
     text = (
-        f"<b>Mail {index + 1}</b>\n\n"
+        f"<b>Mail {index + 1}</b>  [ {status_text} ]\n\n"
         f"Email: <code>{esc(current_email)}</code>\n"
         f"Pass: <code>{esc(config['password'])}</code>\n\n"
         f"CC: {cc_formatted}\n\n"
@@ -485,6 +495,12 @@ def build_caddy_view(user_id):
     )
     
     kb = InlineKeyboardMarkup()
+    
+    kb.row(
+        InlineKeyboardButton("✅ Eligible", callback_data="caddy_eligible"),
+        InlineKeyboardButton("❌ Not Eligible", callback_data="caddy_not_eligible")
+    )
+    
     nav_row = []
     if index > 0: nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data="caddy_prev"))
     if index + 1 < len(emails): nav_row.append(InlineKeyboardButton("Next ➡️", callback_data="caddy_next"))
@@ -500,6 +516,7 @@ def set_bot_commands():
         BotCommand("start", "🏠 Main menu"),
         BotCommand("setup", "⚙️ Setup Password & BIN"),
         BotCommand("update_mail_list", "📧 Update Mail List"),
+        BotCommand("summary", "📊 View Work Summary"),
         BotCommand("help", "📚 Help"),
         BotCommand("redeem", "🎟 Redeem Access Code"),
     ]
@@ -551,6 +568,45 @@ def cmd_update_mail_list(message):
                      "Please paste your emails here (or upload a .txt file).\n"
                      "<i>Note: Updating the list will completely overwrite your old mail list.</i>", 
                      parse_mode="HTML")
+
+@bot.message_handler(commands=['summary'])
+def cmd_summary(message):
+    uid = message.from_user.id
+    ok, hint = check_access_msg(uid)
+    if not ok:
+        bot.send_message(message.chat.id, hint)
+        return
+
+    mail_data = load_mail_data(uid)
+    emails = mail_data.get('emails', [])
+    status_dict = mail_data.get('status', {})
+    
+    if not emails:
+        bot.send_message(message.chat.id, "📭 <b>Mail list empty.</b>\nPlease update list using /update_mail_list", parse_mode="HTML")
+        return
+        
+    total = len(emails)
+    eligible = 0
+    not_eligible = 0
+    pending = 0
+    
+    for i in range(total):
+        st = status_dict.get(str(i), "pending")
+        if st == "eligible": eligible += 1
+        elif st == "not_eligible": not_eligible += 1
+        else: pending += 1
+        
+    text = (
+        f"📊 <b>Mail Work Summary</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"Total Mails: <b>{total}</b>\n\n"
+        f"✅ Eligible: <b>{eligible}</b>\n"
+        f"❌ Not Eligible: <b>{not_eligible}</b>\n"
+        f"⏳ Pending: <b>{pending}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Use /start -> TN Caddy MODE to continue working.</i>"
+    )
+    bot.send_message(message.chat.id, text, parse_mode="HTML")
 
 @bot.message_handler(commands=['redeem'])
 def cmd_redeem(message):
@@ -606,8 +662,7 @@ def on_document(message):
             bot.send_message(message.chat.id, "❌ No emails found in file.")
             return
         
-        # Overwrite old list (assigned dict is reset to clear old pinned cards)
-        mail_data = {"emails": parsed, "assigned": {}, "index": 0}
+        mail_data = {"emails": parsed, "assigned": {}, "status": {}, "index": 0}
         save_mail_data(uid, mail_data)
         user_state.pop(uid, None)
         bot.send_message(message.chat.id, f"✅ Successfully updated list with <b>{len(parsed)}</b> emails.\nUse /start -> TN Caddy MODE to begin.", parse_mode="HTML")
@@ -686,8 +741,7 @@ def on_text(message):
             bot.send_message(message.chat.id, "❌ No valid emails found in text. Try again.")
             return
         
-        # Overwrite old list completely
-        mail_data = {"emails": parsed, "assigned": {}, "index": 0}
+        mail_data = {"emails": parsed, "assigned": {}, "status": {}, "index": 0}
         save_mail_data(uid, mail_data)
         user_state.pop(uid, None)
         bot.send_message(message.chat.id, f"✅ Successfully updated list with <b>{len(parsed)}</b> emails.\nUse /start -> TN Caddy MODE to begin.", parse_mode="HTML")
@@ -749,6 +803,25 @@ def on_callback(call):
             if "message is not modified" not in str(e).lower(): logger.warning(e)
         return
 
+    if data in ("caddy_eligible", "caddy_not_eligible"):
+        mail_data = load_mail_data(uid)
+        idx_str = str(mail_data.get('index', 0))
+        status_dict = mail_data.setdefault('status', {})
+        
+        if data == "caddy_eligible":
+            status_dict[idx_str] = "eligible"
+        else:
+            status_dict[idx_str] = "not_eligible"
+            
+        save_mail_data(uid, mail_data)
+        
+        text, kb = build_caddy_view(uid)
+        try: 
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+        except Exception as e: 
+            if "message is not modified" not in str(e).lower(): logger.warning(e)
+        return
+
     # TN Caddy Navigations
     if data in ("caddy_next", "caddy_prev", "caddy_restart"):
         mail_data = load_mail_data(uid)
@@ -778,4 +851,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
